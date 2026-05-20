@@ -552,12 +552,8 @@ static void extract_worker(int worker_id, void *ctx_ptr) {
         }
 
         CBMFileResult *result = cbm_extract_file(source, source_len, fi->language, ec->project_name,
-<<<<<<< HEAD
-                                                 fi->rel_path, CBM_EXTRACT_BUDGET, NULL, NULL, NULL, NULL);
-=======
                                                  fi->rel_path, CBM_EXTRACT_BUDGET, NULL, NULL,
                                                  ec->macro_table, ec->return_type_table);
->>>>>>> fork/014-parallel-mode-wiring
 
         uint64_t file_elapsed_ms = (extract_now_ns() - file_t0) / PP_USEC_PER_MS;
 

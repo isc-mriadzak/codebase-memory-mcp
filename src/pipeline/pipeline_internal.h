@@ -70,10 +70,7 @@ typedef struct {
      * Owned by pipeline.c / pipeline_incremental.c. */
     const cbm_path_alias_collection_t *path_aliases;
 
-<<<<<<< HEAD
     const CBMMacroTable *macro_table;
-=======
->>>>>>> fork/014-parallel-mode-wiring
     const CBMReturnTypeTable *return_type_table;
 } cbm_pipeline_ctx_t;
 
