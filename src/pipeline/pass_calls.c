@@ -441,8 +441,12 @@ static CBMFileResult *calls_get_or_extract(cbm_pipeline_ctx_t *ctx, int idx,
         return NULL;
     }
     CBMFileResult *r = cbm_extract_file(src, slen, fi->language, ctx->project_name, fi->rel_path,
+<<<<<<< HEAD
                                         CBM_EXTRACT_BUDGET, NULL, NULL,
                                         ctx->macro_table, ctx->return_type_table);
+=======
+                                        CBM_EXTRACT_BUDGET, NULL, NULL, NULL, NULL);
+>>>>>>> fork/014-parallel-mode-wiring
     free(src);
     if (r) {
         *owned = true;

@@ -462,6 +462,10 @@ typedef struct {
 } CBMStringConstantMap;
 
 typedef struct CBMMacroTable CBMMacroTable;
+<<<<<<< HEAD
+=======
+
+>>>>>>> fork/014-parallel-mode-wiring
 #define CBM_RETURN_TYPE_TABLE_CAP 2048
 
 typedef struct {
