@@ -66,13 +66,16 @@ enum {
 #include <fcntl.h>
 #endif
 #include <yyjson/yyjson.h>
-#include <stdint.h> // int64_t
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <errno.h>
+#ifndef _WIN32
+#include <glob.h>
+#endif
 
 /* ── Constants ────────────────────────────────────────────────── */
 
@@ -290,7 +293,18 @@ static const tool_def_t TOOLS[] = {
      "\"iris_password\":{\"type\":\"string\",\"description\":\"IRIS password.\"},"
      "\"iris_package_filter\":{\"type\":\"string\",\"description\":"
      "\"Only index classes whose name starts with this prefix (e.g. 'HS.FHIRServer'). "
-     "Default: exclude system classes starting with '%%'.\"}"
+     "Default: exclude system classes starting with '%%'.\"},"
+     "\"dry_run\":{\"type\":\"boolean\",\"default\":false,\"description\":"
+     "\"When repo_path contains glob patterns (* ? {), dry_run=true returns the list of "
+     "matching paths that WOULD be indexed without actually indexing them. "
+     "Use this to verify your glob pattern before committing to a full index.\"},"
+     "\"project_name\":{\"type\":\"string\",\"description\":"
+     "\"When repo_path is a glob pattern, all matching paths are merged into a single "
+     "project with this name (one shared DB). Omit for separate projects per path. "
+     "Example: project_name=\\\"healthshare-latest\\\" with repo_path=\\\".../*/latest/.../cls\\\" "
+     "creates one queryable graph across all components. "
+     "Frank's use case: project_name=\\\"hscommunity-compare\\\" with "
+     "\\\"hscommunity/{15.x,latest}/databases/hscommlib/cls\\\" indexes both versions together.\"}"
      "},\"required\":[\"repo_path\"]}"},
 
     {"search_graph",
@@ -2521,6 +2535,136 @@ static void build_index_success_response(cbm_mcp_server_t *srv, yyjson_mut_doc *
     }
 }
 
+static bool path_has_glob(const char *path) {
+    for (const char *p = path; *p; p++) {
+        if (*p == '*' || *p == '?' || *p == '{' || *p == '[') return true;
+    }
+    return false;
+}
+
+#ifndef _WIN32
+static char *glob_clean_path(const char *raw) {
+    if (!raw) return NULL;
+    size_t n = strlen(raw);
+    char *p = malloc(n + 1);
+    if (!p) return NULL;
+    memcpy(p, raw, n + 1);
+    if (n > 0 && p[n-1] == '/') p[--n] = '\0';
+    struct stat st;
+    if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) { free(p); return NULL; }
+    return p;
+}
+
+static char *handle_glob_dry_run(const char *pattern) {
+    glob_t gl;
+    memset(&gl, 0, sizeof(gl));
+    if (glob(pattern, GLOB_MARK | GLOB_BRACE, NULL, &gl) != 0 || gl.gl_pathc == 0) {
+        globfree(&gl);
+        char buf[CBM_SZ_512];
+        snprintf(buf, sizeof(buf), "No directories matched: %s", pattern);
+        return cbm_mcp_text_result(buf, true);
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "pattern", pattern);
+    yyjson_mut_obj_add_int(doc, root, "match_count", (int)gl.gl_pathc);
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+    yyjson_mut_obj_add_val(doc, root, "paths", arr);
+
+    for (size_t i = 0; i < gl.gl_pathc; i++) {
+        char *clean = glob_clean_path(gl.gl_pathv[i]);
+        if (!clean) continue;
+        yyjson_mut_val *sv = yyjson_mut_strcpy(doc, clean);
+        if (sv) yyjson_mut_arr_append(arr, sv);
+        free(clean);
+    }
+    globfree(&gl);
+
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    if (!json) return cbm_mcp_text_result("serialization failed", true);
+    char *result = cbm_mcp_text_result(json, false);
+    free(json);
+    return result;
+}
+
+static char *handle_glob_index(cbm_mcp_server_t *srv, const char *pattern,
+                                cbm_index_mode_t mode, bool persistence,
+                                const char *project_name_override) {
+    glob_t gl;
+    memset(&gl, 0, sizeof(gl));
+    int flags = GLOB_MARK | GLOB_BRACE;
+    if (glob(pattern, flags, NULL, &gl) != 0 || gl.gl_pathc == 0) {
+        globfree(&gl);
+        char buf[CBM_SZ_512];
+        snprintf(buf, sizeof(buf),
+                 "No directories matched glob pattern: %s", pattern);
+        return cbm_mcp_text_result(buf, true);
+    }
+
+    char shared_db[CBM_SZ_1K];
+    shared_db[0] = '\0';
+    if (project_name_override && project_name_override[0]) {
+        project_db_path(project_name_override, shared_db, sizeof(shared_db));
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+    yyjson_mut_doc_set_root(doc, arr);
+
+    int matched = 0;
+    for (size_t i = 0; i < gl.gl_pathc; i++) {
+        char *clean = glob_clean_path(gl.gl_pathv[i]);
+        if (!clean) continue;
+
+        const char *db_path = shared_db[0] ? shared_db : NULL;
+        cbm_pipeline_t *p = cbm_pipeline_new(clean, db_path, mode);
+        if (!p) { free(clean); continue; }
+        cbm_pipeline_set_persistence(p, persistence);
+
+        int rc = cbm_pipeline_run(p);
+
+        yyjson_mut_val *obj = yyjson_mut_obj(doc);
+        const char *proj = project_name_override && project_name_override[0]
+            ? project_name_override
+            : cbm_project_name_from_path(clean);
+        yyjson_mut_obj_add_strcpy(doc, obj, "project", proj ? proj : clean);
+        yyjson_mut_obj_add_strcpy(doc, obj, "repo_path", clean);
+        yyjson_mut_obj_add_str(doc, obj, "status", rc == 0 ? "indexed" : "error");
+
+        if (rc == 0) {
+            cbm_store_t *store = resolve_store(srv, proj);
+            if (store) {
+                yyjson_mut_obj_add_int(doc, obj, "nodes",
+                                      cbm_store_count_nodes(store, proj));
+                yyjson_mut_obj_add_int(doc, obj, "edges",
+                                      cbm_store_count_edges(store, proj));
+            }
+        }
+
+        cbm_pipeline_free(p);
+        yyjson_mut_arr_append(arr, obj);
+        matched++;
+        free(clean);
+    }
+    globfree(&gl);
+
+    if (matched == 0) {
+        yyjson_mut_doc_free(doc);
+        return cbm_mcp_text_result("Glob matched paths but none were indexable directories", true);
+    }
+
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    if (!json) return cbm_mcp_text_result("failed to serialize results", true);
+    char *result = cbm_mcp_text_result(json, false);
+    free(json);
+    return result;
+}
+#endif
+
 static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     char *repo_path = cbm_mcp_get_string_arg(args, "repo_path");
     char *mode_str = cbm_mcp_get_string_arg(args, "mode");
@@ -2530,6 +2674,26 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
         free(mode_str);
         return cbm_mcp_text_result("repo_path is required", true);
     }
+
+#ifndef _WIN32
+    if (path_has_glob(repo_path)) {
+        cbm_index_mode_t gmode = CBM_MODE_FULL;
+        if (mode_str && strcmp(mode_str, "fast") == 0)     gmode = CBM_MODE_FAST;
+        if (mode_str && strcmp(mode_str, "moderate") == 0) gmode = CBM_MODE_MODERATE;
+        bool gpersist = cbm_mcp_get_bool_arg(args, "persistence");
+        bool dry_run  = cbm_mcp_get_bool_arg(args, "dry_run");
+        char *proj_override = cbm_mcp_get_string_arg(args, "project_name");
+        free(mode_str);
+        if (dry_run) {
+            char *result = handle_glob_dry_run(repo_path);
+            free(repo_path); free(proj_override);
+            return result;
+        }
+        char *result = handle_glob_index(srv, repo_path, gmode, gpersist, proj_override);
+        free(repo_path); free(proj_override);
+        return result;
+    }
+#endif
 
     if (mode_str && strcmp(mode_str, "cross-repo-intelligence") == 0) {
         free(mode_str);

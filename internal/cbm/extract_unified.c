@@ -72,6 +72,26 @@ static void os_type_map_add(os_type_map_t *map, const char *var_name, const char
     map->count++;
 }
 
+static TSNode find_class_method_call(TSNode root, const char *end) {
+    (void)end;
+    if (strcmp(ts_node_type(root), "class_method_call") == 0) return root;
+    static const char *containers[] = {"expression", "expr_atom", NULL};
+    for (const char **c = containers; *c; c++) {
+        TSNode inner = cbm_find_child_by_kind(root, *c);
+        if (!ts_node_is_null(inner)) {
+            TSNode hit = cbm_find_child_by_kind(inner, "class_method_call");
+            if (!ts_node_is_null(hit)) return hit;
+            TSNode inner2 = cbm_find_child_by_kind(inner, "expr_atom");
+            if (!ts_node_is_null(inner2)) {
+                hit = cbm_find_child_by_kind(inner2, "class_method_call");
+                if (!ts_node_is_null(hit)) return hit;
+            }
+        }
+    }
+    TSNode direct = cbm_find_child_by_kind(root, "class_method_call");
+    return direct;
+}
+
 static void handle_objectscript_type_map(CBMExtractCtx *ctx, TSNode node, WalkState *state) {
     if (ctx->language != CBM_LANG_OBJECTSCRIPT_UDL &&
         ctx->language != CBM_LANG_OBJECTSCRIPT_ROUTINE) {
@@ -104,28 +124,7 @@ static void handle_objectscript_type_map(CBMExtractCtx *ctx, TSNode node, WalkSt
                 continue;
             }
 
-            TSNode cm_call = rhs;
-            if (strcmp(ts_node_type(cm_call), "class_method_call") != 0) {
-                cm_call = cbm_find_child_by_kind(rhs, "class_method_call");
-                if (ts_node_is_null(cm_call)) {
-                    TSNode inner_expr = cbm_find_child_by_kind(rhs, "expression");
-                    if (!ts_node_is_null(inner_expr)) {
-                        cm_call = cbm_find_child_by_kind(inner_expr, "class_method_call");
-                        if (ts_node_is_null(cm_call)) {
-                            TSNode inner_atom = cbm_find_child_by_kind(inner_expr, "expr_atom");
-                            if (!ts_node_is_null(inner_atom)) {
-                                cm_call = cbm_find_child_by_kind(inner_atom, "class_method_call");
-                            }
-                        }
-                    }
-                }
-                if (ts_node_is_null(cm_call)) {
-                    TSNode atom = cbm_find_child_by_kind(rhs, "expr_atom");
-                    if (!ts_node_is_null(atom)) {
-                        cm_call = cbm_find_child_by_kind(atom, "class_method_call");
-                    }
-                }
-            }
+            TSNode cm_call = find_class_method_call(rhs, NULL);
             if (ts_node_is_null(cm_call)) {
                 continue;
             }
