@@ -71,6 +71,7 @@ typedef struct {
     const cbm_path_alias_collection_t *path_aliases;
 
     const CBMMacroTable *macro_table;
+    const CBMReturnTypeTable *return_type_table;
 } cbm_pipeline_ctx_t;
 
 /* Get the current pipeline's package map (NULL if none). */

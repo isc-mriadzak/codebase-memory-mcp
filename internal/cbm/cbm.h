@@ -462,6 +462,17 @@ typedef struct {
 } CBMStringConstantMap;
 
 typedef struct CBMMacroTable CBMMacroTable;
+#define CBM_RETURN_TYPE_TABLE_CAP 2048
+
+typedef struct {
+    const char *method_qn;
+    const char *return_type;
+} CBMReturnTypeEntry;
+
+typedef struct {
+    CBMReturnTypeEntry entries[CBM_RETURN_TYPE_TABLE_CAP];
+    int count;
+} CBMReturnTypeTable;
 
 typedef struct {
     CBMArena *arena;
@@ -477,6 +488,7 @@ typedef struct {
     const char *enclosing_class_qn;
     CBMStringConstantMap string_constants;
     const CBMMacroTable *macro_table;
+    const CBMReturnTypeTable *return_type_table;
 } CBMExtractCtx;
 
 // --- Public API ---
@@ -491,7 +503,8 @@ CBMFileResult *cbm_extract_file(const char *source, int source_len, CBMLanguage 
                                 const char *project, const char *rel_path, int64_t timeout_micros,
                                 const char **extra_defines,
                                 const char **include_paths,
-                                const CBMMacroTable *macro_table
+                                const CBMMacroTable *macro_table,
+                                const CBMReturnTypeTable *return_type_table
 );
 
 // Free all memory associated with a result.
